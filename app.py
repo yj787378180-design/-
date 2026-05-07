@@ -10,9 +10,11 @@ app = Flask(__name__)
 CORS(app)
 DB_FILE = 'whatsapp_full.db'
 
+# ------------------ 数据库初始化 ------------------
 def init_db():
     conn = sqlite3.connect(DB_FILE)
     c = conn.cursor()
+    # 用户表
     c.execute('''
         CREATE TABLE IF NOT EXISTS users (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -23,6 +25,7 @@ def init_db():
             active BOOLEAN DEFAULT 1
         )
     ''')
+    # 号码表
     c.execute('''
         CREATE TABLE IF NOT EXISTS numbers (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -37,7 +40,7 @@ def init_db():
     conn.commit()
     conn.close()
 
-# 初始化默认 Admin
+# 默认 Admin 用户
 def init_admin():
     conn = sqlite3.connect(DB_FILE)
     c = conn.cursor()
@@ -49,7 +52,7 @@ def init_admin():
         conn.commit()
     conn.close()
 
-# 注册用户
+# ------------------ 用户接口 ------------------
 @app.route('/register', methods=['POST'])
 def register():
     data = request.json
@@ -69,7 +72,6 @@ def register():
     finally:
         conn.close()
 
-# 登录
 @app.route('/login', methods=['POST'])
 def login():
     data = request.json
@@ -88,7 +90,7 @@ def login():
         return jsonify({'status': 'success', 'user_id': user[0], 'role': user[2]})
     return jsonify({'status': 'error', 'message': '密码错误'})
 
-# 上传号码
+# ------------------ 上传号码 ------------------
 @app.route('/upload_number', methods=['POST'])
 def upload_number():
     data = request.json
@@ -110,7 +112,76 @@ def upload_number():
     conn.close()
     return jsonify({'status': 'success', 'is_duplicate': is_duplicate, 'duplicate_sub_id': duplicate_sub_id})
 
-# 数据统计
+# ------------------ 用户上传明细 ------------------
+@app.route('/user_numbers', methods=['GET'])
+def user_numbers():
+    conn = sqlite3.connect(DB_FILE)
+    c = conn.cursor()
+    c.execute('''
+        SELECT users.username, numbers.phone, numbers.created_at
+        FROM numbers
+        JOIN users ON numbers.sub_id = users.id
+        ORDER BY numbers.created_at DESC
+    ''')
+    rows = c.fetchall()
+    conn.close()
+
+    result = {}
+    for username, phone, created_at in rows:
+        if username not in result:
+            result[username] = []
+        result[username].append({'phone': phone, 'created_at': created_at})
+    return jsonify(result)
+
+# ------------------ 今日上传统计 ------------------
+@app.route('/daily_stats', methods=['GET'])
+def daily_stats():
+    today = datetime.now().strftime('%Y-%m-%d')
+    conn = sqlite3.connect(DB_FILE)
+    c = conn.cursor()
+    c.execute('''
+        SELECT users.username, COUNT(numbers.id)
+        FROM numbers
+        JOIN users ON numbers.sub_id = users.id
+        WHERE DATE(numbers.created_at) = ?
+        GROUP BY users.username
+    ''', (today,))
+    rows = c.fetchall()
+    conn.close()
+
+    total = sum([count for _, count in rows])
+    result = {'total': total, 'users': {username: count for username, count in rows}}
+    return jsonify(result)
+
+# ------------------ 指定时间段对比 ------------------
+@app.route('/compare_users', methods=['POST'])
+def compare_users():
+    data = request.json
+    start = data.get('start')
+    end = data.get('end')
+    conn = sqlite3.connect(DB_FILE)
+    c = conn.cursor()
+    query = '''
+        SELECT users.username, COUNT(numbers.id)
+        FROM numbers
+        JOIN users ON numbers.sub_id = users.id
+        WHERE 1=1
+    '''
+    params = []
+    if start:
+        query += " AND created_at >= ?"
+        params.append(start)
+    if end:
+        query += " AND created_at <= ?"
+        params.append(end)
+    query += " GROUP BY users.username"
+    c.execute(query, params)
+    rows = c.fetchall()
+    conn.close()
+    result = {username: count for username, count in rows}
+    return jsonify(result)
+
+# ------------------ 数据统计 ------------------
 @app.route('/stats', methods=['POST'])
 def stats():
     data = request.json
@@ -148,7 +219,7 @@ def stats():
         'hourly': hourly_counter
     })
 
-# 用户管理
+# ------------------ 用户管理 ------------------
 @app.route('/users', methods=['GET'])
 def list_users():
     conn = sqlite3.connect(DB_FILE)
@@ -179,12 +250,15 @@ def delete_user(user_id):
     conn.close()
     return jsonify({'status': 'success'})
 
-# 静态前端
+# ------------------ 静态前端 ------------------
 @app.route('/')
 def index():
     return app.send_static_file('index.html')
 
+# ------------------ 启动 ------------------
 if __name__ == '__main__':
     init_db()
     init_admin()
-    app.run(host='0.0.0.0', port=5000)
+    import os
+    port = int(os.environ.get("PORT", 5000))
+    app.run(host='0.0.0.0', port=port)
